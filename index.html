@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>学習用架空株式市場</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #121212;
+        color: #eee;
+        margin: 0;
+        padding: 0;
+      }
+      h2,
+      h4 {
+        margin: 5px 0;
+      }
+      #controls {
+        padding: 10px;
+        background: #222;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 10px;
+        align-items: center;
+      }
+      #balance,
+      #portfolio {
+        font-weight: bold;
+      }
+      canvas {
+        display: block;
+        background: #111;
+        margin: 10px auto;
+        max-width: 95%;
+      }
+      .section {
+        padding: 5px;
+        margin: 5px;
+        background: #222;
+      }
+      #orderBook div {
+        display: flex;
+        justify-content: space-between;
+      }
+      label {
+        display: block;
+        font-size: 0.8em;
+        color: #aaa;
+      }
+      input,
+      select,
+      button {
+        width: 100%;
+        padding: 4px;
+        border: none;
+        border-radius: 3px;
+      }
+      button {
+        background: #0a0;
+        color: #fff;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>学習用架空株式市場</h2>
+
+    <div id="controls">
+      <div>
+        <label>残高</label>
+        <span id="balance">-</span>
+      </div>
+      <div>
+        <label>銘柄選択</label>
+        <select id="symbolSelect"></select>
+      </div>
+      <div>
+        <label>売買</label>
+        <select id="sideSelect">
+          <option value="buy">買い</option>
+          <option value="sell">売り</option>
+        </select>
+      </div>
+      <div>
+        <label>注文タイプ</label>
+        <select id="typeSelect">
+          <option value="limit">指値</option>
+          <option value="market">成行</option>
+          <option value="stop">逆指値</option>
+        </select>
+      </div>
+      <div>
+        <label>価格（指値/逆指値）</label>
+        <input id="priceInput" type="number" placeholder="Price" />
+      </div>
+      <div>
+        <label>逆指値価格（Stop）</label>
+        <input id="stopInput" type="number" placeholder="StopPrice" />
+      </div>
+      <div>
+        <label>株数</label>
+        <input id="amountInput" type="number" value="1" min="1" />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="placeBtn">注文</button>
+      </div>
+      <div>
+        <label>保有株</label>
+        <div id="portfolio"></div>
+      </div>
+    </div>
+
+    <div class="section" id="orderBook">
+      <h4>Order Book</h4>
+      <div id="buyOrders"></div>
+      <div id="sellOrders"></div>
+    </div>
+
+    <div class="section" id="tradeHistory">
+      <h4>Trade History</h4>
+    </div>
+
+    <canvas id="priceChart" height="200"></canvas>
+
+    <script>
+      const socket = io();
+      let currentUser = { balance: 0, holdings: {}, learningMode: true };
+      let companies = [],
+        priceHistory = {},
+        chart = null;
+
+      socket.on("userData", (data) => {
+        currentUser = data;
+        document.getElementById("balance").textContent =
+          data.balance.toFixed(2);
+        updatePortfolio();
+      });
+
+      socket.on("state", (payload) => {
+        companies = payload.companies;
+        const sel = document.getElementById("symbolSelect");
+        sel.innerHTML = "";
+        companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
+
+        // 価格履歴
+        companies.forEach((c) => {
+          if (!priceHistory[c.symbol]) priceHistory[c.symbol] = [];
+          priceHistory[c.symbol].push(c.price);
+          if (priceHistory[c.symbol].length > 50)
+            priceHistory[c.symbol].shift();
+        });
+        updateChart();
+        updateOrderBook();
+      });
+
+      socket.on("trade", (t) => {
+        const hist = document.getElementById("tradeHistory");
+        hist.innerHTML =
+          `<div>${t.symbol} ${t.amount}株 @ ${t.price}</div>` + hist.innerHTML;
+      });
+
+      document.getElementById("placeBtn").addEventListener("click", () => {
+        const symbol = document.getElementById("symbolSelect").value;
+        const side = document.getElementById("sideSelect").value;
+        const price = Number(document.getElementById("priceInput").value);
+        const amount = Number(document.getElementById("amountInput").value);
+        const type = document.getElementById("typeSelect").value;
+        const stopPrice = document.getElementById("stopInput").value || null;
+        socket.emit("placeOrder", {
+          symbol,
+          side,
+          price,
+          amount,
+          type,
+          stopPrice,
+        });
+      });
+
+      function updatePortfolio() {
+        const div = document.getElementById("portfolio");
+        let html = "";
+        for (const sym in currentUser.holdings) {
+          html += `${sym}: ${currentUser.holdings[sym]}株<br>`;
+        }
+        div.innerHTML = html;
+      }
+
+      function updateOrderBook() {
+        if (!companies.length) return;
+        const company = companies[0];
+        document.getElementById("buyOrders").innerHTML =
+          "<b>買い板</b><br>" +
+          company.orderBook.buy
+            .map((o) => `${o.price} : ${o.amount}`)
+            .join("<br>");
+        document.getElementById("sellOrders").innerHTML =
+          "<b>売り板</b><br>" +
+          company.orderBook.sell
+            .map((o) => `${o.price} : ${o.amount}`)
+            .join("<br>");
+      }
+
+      function updateChart() {
+        const ctx = document.getElementById("priceChart").getContext("2d");
+        const symbols = Object.keys(priceHistory);
+        const datasets = symbols.map((sym, i) => ({
+          label: sym,
+          data: priceHistory[sym],
+          borderColor: `hsl(${i * 60},80%,50%)`,
+          backgroundColor: "transparent",
+          tension: 0.2,
+        }));
+        const labels = priceHistory[symbols[0]]
+          ? priceHistory[symbols[0]].map((_, i) => i + 1)
+          : [];
+        if (!chart) {
+          chart = new Chart(ctx, {
+            type: "line",
+            data: { labels, datasets },
+            options: {
+              responsive: true,
+              animation: false,
+              plugins: { legend: { position: "top" } },
+              scales: { y: { beginAtZero: false } },
+            },
+          });
+        } else {
+          chart.data.datasets = datasets;
+          chart.data.labels = labels;
+          chart.update();
+        }
+      }
+    </script>
+  </body>
+</html>
