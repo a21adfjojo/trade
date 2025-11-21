@@ -492,7 +492,7 @@ io.on("connection", (socket) => {
 // ---------- Start server ----------
 async function start() {
   try {
-    const uri = process.env.MONGO_URL;
+    const uri = process.env.MONGO_URI;
     if (!uri) throw new Error("Please set MONGO_URL env var");
     await mongoose.connect(uri, {
       useNewUrlParser: true,
