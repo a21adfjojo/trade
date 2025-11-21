@@ -346,12 +346,14 @@ async function broadcastState(force = false) {
 }
 
 // ---------- Socket.io ----------
+// ---------- Socket.io ----------
 io.on("connection", async (socket) => {
   const ip =
     socket.handshake.headers["x-forwarded-for"] || socket.handshake.address;
   let user = await User.findOne({ ip });
   if (!user) user = await User.create({ ip });
   socket.user = user;
+
   socket.emit("userData", {
     balance: user.balance,
     holdings: user.holdings,
@@ -363,41 +365,110 @@ io.on("connection", async (socket) => {
     const company = await Company.findOne({ symbol });
     if (!company) return socket.emit("err", "会社が見つかりません");
 
-    let trades = [];
-
     if (type === "market") {
-      // 成行注文：板には入れず即約定
-      const tempOrder = {
-        price: company.price,
-        amount,
-        userId: socket.user._id,
-        type,
-      };
-      if (side === "buy")
-        company.orderBook.buy.unshift(tempOrder); // 仮の買い注文
-      else company.orderBook.sell.unshift(tempOrder); // 仮の売り注文
+      // 成行注文：板に入れず即約定
+      let remaining = amount;
 
-      trades = await matchCompanyOrders(company);
+      if (side === "buy") {
+        while (remaining > 0 && company.orderBook.sell.length) {
+          const seller = company.orderBook.sell[0];
+          const dealAmount = Math.min(remaining, seller.amount);
 
-      // 仮注文は削除済みなので板はそのまま
+          const buyerDoc = await User.findById(socket.user._id);
+          const sellerDoc = seller.userId
+            ? await User.findById(seller.userId)
+            : null;
+
+          const dealPrice = seller.price;
+
+          if (buyerDoc) {
+            buyerDoc.balance -= dealAmount * dealPrice;
+            buyerDoc.holdings[company.symbol] =
+              (buyerDoc.holdings[company.symbol] || 0) + dealAmount;
+            await buyerDoc.save();
+          }
+          if (sellerDoc) {
+            sellerDoc.balance += dealAmount * dealPrice;
+            sellerDoc.holdings[company.symbol] -= dealAmount;
+            await sellerDoc.save();
+          }
+
+          seller.amount -= dealAmount;
+          remaining -= dealAmount;
+          if (seller.amount <= 0) company.orderBook.sell.shift();
+
+          io.emit("trade", {
+            symbol: company.symbol,
+            price: dealPrice,
+            amount: dealAmount,
+            buyUserId: buyerDoc._id,
+            sellUserId: sellerDoc?._id || null,
+            timestamp: new Date(),
+          });
+
+          company.volume += dealAmount;
+          company.price = dealPrice;
+        }
+      } else {
+        // 売り成行
+        while (remaining > 0 && company.orderBook.buy.length) {
+          const buyer = company.orderBook.buy[0];
+          const dealAmount = Math.min(remaining, buyer.amount);
+
+          const sellerDoc = await User.findById(socket.user._id);
+          const buyerDoc = buyer.userId
+            ? await User.findById(buyer.userId)
+            : null;
+
+          const dealPrice = buyer.price;
+
+          if (sellerDoc) {
+            sellerDoc.balance += dealAmount * dealPrice;
+            sellerDoc.holdings[company.symbol] =
+              (sellerDoc.holdings[company.symbol] || 0) - dealAmount;
+            await sellerDoc.save();
+          }
+          if (buyerDoc) {
+            buyerDoc.balance -= dealAmount * dealPrice;
+            buyerDoc.holdings[company.symbol] =
+              (buyerDoc.holdings[company.symbol] || 0) + dealAmount;
+            await buyerDoc.save();
+          }
+
+          buyer.amount -= dealAmount;
+          remaining -= dealAmount;
+          if (buyer.amount <= 0) company.orderBook.buy.shift();
+
+          io.emit("trade", {
+            symbol: company.symbol,
+            price: dealPrice,
+            amount: dealAmount,
+            buyUserId: buyerDoc?._id || null,
+            sellUserId: sellerDoc._id,
+            timestamp: new Date(),
+          });
+
+          company.volume += dealAmount;
+          company.price = dealPrice;
+        }
+      }
     } else {
-      // 指値注文：板に追加してマッチング
+      // 指値注文：板に追加して約定処理
       addOrderToBook(company, side, price, amount, socket.user._id, type);
-      trades = await matchCompanyOrders(company);
+      await matchCompanyOrders(company);
     }
 
-    // 最新のユーザー情報を DB から取得して socket.user に反映
+    // 最新のユーザー情報を送信
     const freshUser = await User.findById(socket.user._id);
     socket.user = freshUser;
 
-    // クライアントに送信
     socket.emit("userData", {
       balance: freshUser.balance,
       holdings: freshUser.holdings,
       learningMode: freshUser.learningMode,
     });
 
-    // 会社情報も更新
+    // 会社情報更新
     await Company.findOneAndUpdate(
       { _id: company._id },
       {
@@ -409,7 +480,6 @@ io.on("connection", async (socket) => {
       }
     );
 
-    // 全体状態もブロードキャスト
     await broadcastState();
   });
 });
