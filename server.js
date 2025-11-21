@@ -337,6 +337,12 @@ io.on("connection", async (socket) => {
     } = data;
     const company = await Company.findOne({ symbol });
     if (!company) return socket.emit("err", "company not found");
+    // 売り注文の場合、保有株チェック
+    if (side === "sell" && (socket.user.holdings[symbol] || 0) < amount) {
+      return socket.emit("err", "保有株が足りません");
+    }
+
+    // 注文を追加
     addOrderToBook(
       company,
       side,
@@ -346,6 +352,7 @@ io.on("connection", async (socket) => {
       type,
       stopPrice
     );
+
     const trades = matchCompanyOrders(company); // 約定情報を返すようにする
 
     await Company.findOneAndUpdate(
