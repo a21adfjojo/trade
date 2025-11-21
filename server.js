@@ -357,22 +357,26 @@ io.on("connection", async (socket) => {
       }
     );
 
-    // 成行注文の場合は matchCompanyOrders の約定価格で残高/株数を更新
+    let userUpdated = false;
+
     for (let t of trades) {
-      // 買いユーザーが自分なら残高を減らし株数を増やす
       if (t.buyUserId && t.buyUserId.equals(socket.user._id)) {
         socket.user.balance -= t.price * t.amount;
         socket.user.holdings[symbol] =
           (socket.user.holdings[symbol] || 0) + t.amount;
+        userUpdated = true;
       }
-      // 売りユーザーが自分なら株数を減らし残高を増やす
       if (t.sellUserId && t.sellUserId.equals(socket.user._id)) {
+        if ((socket.user.holdings[symbol] || 0) < t.amount) {
+          t.amount = socket.user.holdings[symbol] || 0; // 空売り防止
+        }
         socket.user.holdings[symbol] -= t.amount;
         socket.user.balance += t.price * t.amount;
+        userUpdated = true;
       }
     }
 
-    await socket.user.save();
+    if (userUpdated) await socket.user.save(); // ここだけ
 
     await broadcastState();
   });
