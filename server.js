@@ -327,33 +327,50 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("placeOrder", async (data) => {
-    const {
-      symbol,
-      side,
-      price,
-      amount,
-      type = "limit",
-      stopPrice = null,
-    } = data;
+    const { symbol, side, price, amount, type = "limit" } = data;
     const company = await Company.findOne({ symbol });
-    if (!company) return socket.emit("err", "company not found");
-    // 売り注文の場合、保有株チェック
+    if (!company) return socket.emit("err", "会社が見つかりません");
+
+    // 売りなら株チェック
     if (side === "sell" && (socket.user.holdings[symbol] || 0) < amount) {
       return socket.emit("err", "保有株が足りません");
     }
 
-    // 注文を追加
-    addOrderToBook(
-      company,
-      side,
-      price,
-      amount,
-      socket.user._id,
-      type,
-      stopPrice
-    );
+    // 買いなら残高チェック
+    if (side === "buy" && socket.user.balance < price * amount) {
+      return socket.emit("err", "残高が足りません");
+    }
 
-    const trades = matchCompanyOrders(company); // 約定情報を返すようにする
+    // 注文追加
+    addOrderToBook(company, side, price, amount, socket.user._id, type);
+
+    const trades = matchCompanyOrders(company);
+
+    // 約定処理
+    let userUpdated = false;
+    for (let t of trades) {
+      // 買った場合
+      if (t.buyUserId && t.buyUserId.equals(socket.user._id)) {
+        // 残高が足りる分だけ買う
+        const cost = t.price * t.amount;
+        if (socket.user.balance >= cost) {
+          socket.user.balance -= cost;
+          socket.user.holdings[symbol] =
+            (socket.user.holdings[symbol] || 0) + t.amount;
+          userUpdated = true;
+        }
+      }
+
+      // 売った場合
+      if (t.sellUserId && t.sellUserId.equals(socket.user._id)) {
+        const qty = Math.min(socket.user.holdings[symbol] || 0, t.amount);
+        socket.user.holdings[symbol] -= qty;
+        socket.user.balance += t.price * qty;
+        userUpdated = true;
+      }
+    }
+
+    if (userUpdated) await socket.user.save();
 
     await Company.findOneAndUpdate(
       { _id: company._id },
@@ -365,27 +382,6 @@ io.on("connection", async (socket) => {
         },
       }
     );
-
-    let userUpdated = false;
-
-    for (let t of trades) {
-      if (t.buyUserId && t.buyUserId.equals(socket.user._id)) {
-        socket.user.balance -= t.price * t.amount;
-        socket.user.holdings[symbol] =
-          (socket.user.holdings[symbol] || 0) + t.amount;
-        userUpdated = true;
-      }
-      if (t.sellUserId && t.sellUserId.equals(socket.user._id)) {
-        if ((socket.user.holdings[symbol] || 0) < t.amount) {
-          t.amount = socket.user.holdings[symbol] || 0; // 空売り防止
-        }
-        socket.user.holdings[symbol] -= t.amount;
-        socket.user.balance += t.price * t.amount;
-        userUpdated = true;
-      }
-    }
-
-    if (userUpdated) await socket.user.save(); // ここだけ
 
     await broadcastState();
   });
