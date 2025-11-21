@@ -106,7 +106,13 @@ async function matchCompanyOrders(company) {
       continue;
     }
 
-    const dealPrice = (buyer.price + seller.price) / 2;
+    const dealPrice =
+      buyer.type === "market"
+        ? company.price
+        : seller.type === "market"
+        ? company.price
+        : (buyer.price + seller.price) / 2;
+
     lastPrice = dealPrice;
     company.volume = (company.volume || 0) + dealAmount;
 
@@ -353,28 +359,27 @@ io.on("connection", async (socket) => {
     const company = await Company.findOne({ symbol });
     if (!company) return socket.emit("err", "会社が見つかりません");
 
-    // 売りなら株チェック
-    if (side === "sell" && (socket.user.holdings[symbol] || 0) < amount) {
-      return socket.emit("err", "保有株が足りません");
-    }
+    // 成行の場合は現在株価を使用
+    const finalPrice = type === "market" ? company.price : price;
 
-    // 買いなら残高チェック
-    if (side === "buy" && socket.user.balance < price * amount) {
-      return socket.emit("err", "残高が足りません");
-    }
-
-    // 注文追加
-    addOrderToBook(company, side, price, amount, socket.user._id, type);
+    // 注文を追加
+    addOrderToBook(company, side, finalPrice, amount, socket.user._id, type);
 
     // 約定処理を await
-    const trades = await matchCompanyOrders(company);
+    await matchCompanyOrders(company);
 
-    // ユーザーの残高・株数更新は matchCompanyOrders 内で完了しているので
-    // socket.user に反映して送信する
+    // 最新のユーザー情報を DB から取得して socket.user に反映
     const freshUser = await User.findById(socket.user._id);
     socket.user = freshUser;
 
-    // Company 更新
+    // クライアントに送信
+    socket.emit("userData", {
+      balance: freshUser.balance,
+      holdings: freshUser.holdings,
+      learningMode: freshUser.learningMode,
+    });
+
+    // 会社情報も更新
     await Company.findOneAndUpdate(
       { _id: company._id },
       {
@@ -386,7 +391,7 @@ io.on("connection", async (socket) => {
       }
     );
 
-    // 最新状態をブロードキャスト
+    // 全体状態もブロードキャスト
     await broadcastState();
   });
 });
