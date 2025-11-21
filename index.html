@@ -132,6 +132,34 @@
         priceHistory = {},
         chart = null;
 
+      // ページロード時に注文フォームの表示を更新
+      document.addEventListener("DOMContentLoaded", () => {
+        const typeSelect = document.getElementById("typeSelect");
+        const priceInput = document.getElementById("priceInput");
+        const stopInput = document.getElementById("stopInput");
+
+        function updateOrderFormVisibility() {
+          const selectedType = typeSelect.value;
+          if (selectedType === "market") {
+            priceInput.disabled = true;
+            priceInput.value = ""; // 成行の場合は価格入力をクリア
+            stopInput.disabled = true;
+            stopInput.value = ""; // ストップ価格入力をクリア
+          } else if (selectedType === "limit") {
+            priceInput.disabled = false;
+            stopInput.disabled = true;
+            stopInput.value = "";
+          } else if (selectedType === "stop") {
+            priceInput.disabled = false; // 逆指値の場合も指値価格を入力させる
+            stopInput.disabled = false;
+          }
+        }
+
+        typeSelect.addEventListener("change", updateOrderFormVisibility);
+        // 初期ロード時にも適用
+        updateOrderFormVisibility();
+      });
+
       socket.on("userData", (data) => {
         currentUser = data;
         document.getElementById("balance").textContent =
@@ -142,8 +170,13 @@
       socket.on("state", (payload) => {
         companies = payload.companies;
         const sel = document.getElementById("symbolSelect");
-        sel.innerHTML = "";
-        companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
+        // 銘柄リストが空の場合のみ更新
+        if (sel.options.length === 0 && companies.length > 0) {
+          companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
+          // 初回ロード時にチャートと板情報を更新
+          updateOrderBook();
+          updateChart();
+        }
 
         // 価格履歴
         companies.forEach((c) => {
@@ -152,23 +185,52 @@
           if (priceHistory[c.symbol].length > 50)
             priceHistory[c.symbol].shift();
         });
+        // 選択されている銘柄のチャートと板情報を更新
         updateChart();
         updateOrderBook();
       });
 
       socket.on("trade", (t) => {
         const hist = document.getElementById("tradeHistory");
-        hist.innerHTML =
-          `<div>${t.symbol} ${t.amount}株 @ ${t.price}</div>` + hist.innerHTML;
+        const tradeEntry = document.createElement("div");
+        tradeEntry.textContent = `${t.symbol} ${t.amount}株 @ ${t.price.toFixed(
+          2
+        )}`;
+        hist.prepend(tradeEntry); // 新しい取引を一番上に追加
+        // 履歴が長くなりすぎたら古いものを削除
+        if (hist.children.length > 20) {
+          hist.removeChild(hist.lastChild);
+        }
       });
 
       document.getElementById("placeBtn").addEventListener("click", () => {
         const symbol = document.getElementById("symbolSelect").value;
         const side = document.getElementById("sideSelect").value;
-        const price = Number(document.getElementById("priceInput").value);
-        const amount = Number(document.getElementById("amountInput").value);
         const type = document.getElementById("typeSelect").value;
-        const stopPrice = document.getElementById("stopInput").value || null;
+        let price = null;
+        let stopPrice = null;
+
+        if (type !== "market") {
+          price = Number(document.getElementById("priceInput").value);
+          if (isNaN(price) || price <= 0) {
+            alert("有効な価格を入力してください。");
+            return;
+          }
+        }
+        if (type === "stop") {
+          stopPrice = Number(document.getElementById("stopInput").value);
+          if (isNaN(stopPrice) || stopPrice <= 0) {
+            alert("有効な逆指値価格を入力してください。");
+            return;
+          }
+        }
+
+        const amount = Number(document.getElementById("amountInput").value);
+        if (isNaN(amount) || amount <= 0) {
+          alert("有効な株数を入力してください。");
+          return;
+        }
+
         socket.emit("placeOrder", {
           symbol,
           side,
@@ -179,43 +241,90 @@
         });
       });
 
+      // 銘柄選択が変更されたときに板情報とチャートを更新
+      document.getElementById("symbolSelect").addEventListener("change", () => {
+        updateOrderBook();
+        updateChart();
+      });
+
       function updatePortfolio() {
         const div = document.getElementById("portfolio");
         let html = "";
         for (const sym in currentUser.holdings) {
-          html += `${sym}: ${currentUser.holdings[sym]}株<br>`;
+          if (currentUser.holdings[sym] > 0) {
+            // 保有株数が0より大きい場合のみ表示
+            html += `${sym}: ${currentUser.holdings[sym]}株<br>`;
+          }
         }
-        div.innerHTML = html;
+        div.innerHTML = html || "保有株なし"; // 保有株がない場合の表示
       }
 
       function updateOrderBook() {
-        if (!companies.length) return;
-        const company = companies[0];
+        const selectedSymbol = document.getElementById("symbolSelect").value;
+        const company = companies.find((c) => c.symbol === selectedSymbol);
+
+        if (!company) {
+          document.getElementById("buyOrders").innerHTML =
+            "<b>買い板</b><br>選択された銘柄のデータがありません";
+          document.getElementById("sellOrders").innerHTML =
+            "<b>売り板</b><br>選択された銘柄のデータがありません";
+          return;
+        }
+
+        // サーバーから送られてくる orderBook は既にソートされていると仮定
         document.getElementById("buyOrders").innerHTML =
           "<b>買い板</b><br>" +
-          company.orderBook.buy
-            .map((o) => `${o.price} : ${o.amount}`)
+          (company.orderBook.buy || [])
+            .map(
+              (o) =>
+                `${o.price.toFixed(2)} : ${o.amount}${
+                  o.type === "stop"
+                    ? " (Stop:" + o.stopPrice.toFixed(2) + ")"
+                    : ""
+                }`
+            )
             .join("<br>");
         document.getElementById("sellOrders").innerHTML =
           "<b>売り板</b><br>" +
-          company.orderBook.sell
-            .map((o) => `${o.price} : ${o.amount}`)
+          (company.orderBook.sell || [])
+            .map(
+              (o) =>
+                `${o.price.toFixed(2)} : ${o.amount}${
+                  o.type === "stop"
+                    ? " (Stop:" + o.stopPrice.toFixed(2) + ")"
+                    : ""
+                }`
+            )
             .join("<br>");
       }
 
       function updateChart() {
         const ctx = document.getElementById("priceChart").getContext("2d");
-        const symbols = Object.keys(priceHistory);
-        const datasets = symbols.map((sym, i) => ({
-          label: sym,
-          data: priceHistory[sym],
-          borderColor: `hsl(${i * 60},80%,50%)`,
-          backgroundColor: "transparent",
-          tension: 0.2,
-        }));
-        const labels = priceHistory[symbols[0]]
-          ? priceHistory[symbols[0]].map((_, i) => i + 1)
-          : [];
+        const selectedSymbol = document.getElementById("symbolSelect").value;
+
+        if (!selectedSymbol || !priceHistory[selectedSymbol]) {
+          // 選択された銘柄がないか、履歴がない場合はチャートをクリア
+          if (chart) {
+            chart.destroy();
+            chart = null;
+          }
+          return;
+        }
+
+        const data = priceHistory[selectedSymbol];
+        // 履歴の長さに応じたラベルを動的に生成
+        const labels = data.map((_, i) => i + 1);
+
+        const datasets = [
+          {
+            label: selectedSymbol,
+            data: data,
+            borderColor: `hsl(0,80%,50%)`, // 選択された銘柄は固定の色
+            backgroundColor: "transparent",
+            tension: 0.2,
+          },
+        ];
+
         if (!chart) {
           chart = new Chart(ctx, {
             type: "line",
