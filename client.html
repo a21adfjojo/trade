@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>架空株式市場 — Trade UI</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- socket.io client -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+    <style>
+      /* Dark trade UI */
+      :root {
+        --bg: #0f1115;
+        --panel: #13161b;
+        --muted: #b9c0c8;
+        --up: #00c65a;
+        --down: #ff4d4d;
+        --accent: #2b7cff;
+        --glass: rgba(255, 255, 255, 0.03);
+      }
+      * {
+        box-sizing: border-box;
+        font-family: Inter, Roboto, "Helvetica Neue", Arial;
+        color: #e6eef6;
+      }
+      body {
+        margin: 0;
+        background: linear-gradient(180deg, #0c0d10, #0f1115);
+        height: 100vh;
+        padding: 16px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+        color: var(--accent);
+      }
+      .container {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 12px;
+        height: calc(100vh - 72px);
+      }
+      .main {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 12px;
+        height: 100%;
+      }
+      .left {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .chart-panel {
+        background: var(--panel);
+        border-radius: 10px;
+        padding: 12px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+      }
+      .mid-panel {
+        display: flex;
+        gap: 12px;
+      }
+      .orderbook,
+      .tradepanel {
+        background: var(--panel);
+        padding: 12px;
+        border-radius: 8px;
+        width: 100%;
+      }
+      .orderbook {
+        height: 320px;
+        overflow: auto;
+      }
+      .orderbook .side {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+      .orderbook .buy {
+        color: var(--up);
+      }
+      .orderbook .sell {
+        color: var(--down);
+      }
+      .tradepanel input,
+      .tradepanel select {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: transparent;
+        color: inherit;
+      }
+      .tradepanel button {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px;
+        border: 0;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .companies {
+        background: var(--panel);
+        padding: 12px;
+        border-radius: 8px;
+        overflow: auto;
+        height: 200px;
+      }
+      .company-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px;
+        border-radius: 6px;
+      }
+      .price.up {
+        color: var(--up);
+      }
+      .price.down {
+        color: var(--down);
+      }
+      footer {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .small {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .topbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .pair {
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: var(--glass);
+        color: var(--muted);
+      }
+      /* responsive */
+      @media (max-width: 900px) {
+        .main {
+          grid-template-columns: 1fr;
+        }
+        .tradepanel {
+          order: 3;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>📈 架空株式市場 — Trade UI</h1>
+      <div class="topbar">
+        <div class="pair">Demo Market</div>
+        <div class="pair small" id="interest">Interest: -</div>
+      </div>
+    </header>
+
+    <div class="container">
+      <div class="main">
+        <div class="left">
+          <div class="chart-panel">
+            <canvas id="priceChart" height="200"></canvas>
+          </div>
+
+          <div class="mid-panel">
+            <div class="orderbook">
+              <h3 style="margin: 0 0 8px 0">Order Book (Top)</h3>
+              <div id="orderSides">
+                <!-- buy/sell inserted here -->
+              </div>
+            </div>
+
+            <div class="tradepanel">
+              <h3 style="margin: 0 0 8px 0">Trade Panel</h3>
+              <label>Symbol</label>
+              <select id="symbolSelect"></select>
+              <label>Side</label>
+              <select id="sideSelect">
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+              <label>Type</label>
+              <select id="typeSelect">
+                <option value="limit">Limit</option>
+              </select>
+              <label>Price</label>
+              <input id="priceInput" type="number" step="0.01" />
+              <label>Amount</label>
+              <input id="amountInput" type="number" step="1" value="1" />
+              <button id="placeBtn">Place Order</button>
+              <div style="height: 8px"></div>
+              <div class="small">
+                Tip: Try buying and selling to see the chart move. NPCs also
+                trade.
+              </div>
+            </div>
+          </div>
+
+          <div class="companies" id="companyList"></div>
+        </div>
+
+        <div
+          style="width: 360px; display: flex; flex-direction: column; gap: 12px"
+        >
+          <div class="orderbook" style="height: 420px">
+            <h3 style="margin: 0 0 8px 0">Market Depth (Selected)</h3>
+            <div id="depthDetail"></div>
+          </div>
+
+          <div class="orderbook" style="height: 180px">
+            <h3 style="margin: 0 0 8px 0">News</h3>
+            <div
+              id="newsBox"
+              style="font-size: 13px; color: var(--muted)"
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        <div class="small">Server: <span id="serverAddr">localhost</span></div>
+        <div class="small">Last update: <span id="lastUpdate">-</span></div>
+      </footer>
+    </div>
+
+    <script>
+      // Adjust server URL if needed
+      const SERVER =
+        location.hostname === "localhost" || location.hostname === ""
+          ? "http://localhost:8080"
+          : `${location.protocol}//${location.host}`;
+      document.getElementById("serverAddr").textContent = SERVER;
+
+      const socket = io(SERVER);
+
+      let companies = [];
+      let market = { interestRate: 1.0 };
+      let currentSymbol = null;
+
+      // Chart setup
+      const ctx = document.getElementById("priceChart").getContext("2d");
+      const chartData = {
+        labels: [],
+        datasets: [
+          {
+            label: "Price",
+            data: [],
+            borderWidth: 1,
+            pointRadius: 0,
+            tension: 0.15,
+            borderColor: "#2b7cff",
+            backgroundColor: "rgba(43,124,255,0.06)",
+            fill: true,
+          },
+        ],
+      };
+      const priceChart = new Chart(ctx, {
+        type: "line",
+        data: chartData,
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { display: false },
+            y: {
+              beginAtZero: false,
+              grid: { color: "rgba(255,255,255,0.03)" },
+            },
+          },
+        },
+      });
+
+      // Helpers for UI
+      function renderCompaniesList() {
+        const el = document.getElementById("companyList");
+        el.innerHTML = "";
+        companies.forEach((c) => {
+          const div = document.createElement("div");
+          div.className = "company-row";
+          div.style.display = "flex";
+          div.style.justifyContent = "space-between";
+          div.style.alignItems = "center";
+          div.style.cursor = "pointer";
+          div.onclick = () => selectSymbol(c.symbol);
+          const name = document.createElement("div");
+          name.innerHTML = `<div style="font-weight:600">${c.symbol}</div><div class="small" style="color:var(--muted)">${c.name}</div>`;
+          const pr = document.createElement("div");
+          pr.innerHTML = `<div class="price" style="font-weight:700">${Number(
+            c.price
+          ).toFixed(2)}</div><div class="small">${c.volume} vol</div>`;
+          div.appendChild(name);
+          div.appendChild(pr);
+          el.appendChild(div);
+        });
+        // populate symbol select
+        const sel = document.getElementById("symbolSelect");
+        sel.innerHTML = "";
+        companies.forEach((c) => {
+          const opt = document.createElement("option");
+          opt.value = c.symbol;
+          opt.textContent = c.symbol;
+          sel.appendChild(opt);
+        });
+        if (!currentSymbol && companies.length) {
+          selectSymbol(companies[0].symbol);
+        }
+      }
+
+      function selectSymbol(sym) {
+        currentSymbol = sym;
+        document.getElementById("symbolSelect").value = sym;
+        updateDepthPanel();
+        // reset chart data to selected symbol's recent history (we've been collecting global 'companies' price updates)
+        rebuildChartFor(sym);
+      }
+
+      function updateDepthPanel() {
+        const sym = currentSymbol;
+        const el = document.getElementById("depthDetail");
+        const c = companies.find((x) => x.symbol === sym);
+        if (!c) {
+          el.innerHTML = '<div class="small">No symbol</div>';
+          return;
+        }
+        let html = `<div style="display:flex;gap:12px"><div style="flex:1"><strong>Buy (Top)</strong></div><div style="flex:1"><strong>Sell (Top)</strong></div></div><hr style="border-color:rgba(255,255,255,0.04)"/>`;
+        const buys = (c.orderBook.buy || []).slice(0, 10);
+        const sells = (c.orderBook.sell || []).slice(0, 10);
+        const rows = Math.max(buys.length, sells.length);
+        for (let i = 0; i < rows; i++) {
+          const b = buys[i];
+          const s = sells[i];
+          html += `<div style="display:flex;gap:12px;margin-bottom:6px"><div style="flex:1;color:${
+            b ? "var(--up)" : "var(--muted)"
+          }">${
+            b ? b.price.toFixed(2) + " × " + b.amount : ""
+          }</div><div style="flex:1;color:${
+            s ? "var(--down)" : "var(--muted)"
+          };text-align:right">${
+            s ? s.price.toFixed(2) + " × " + s.amount : ""
+          }</div></div>`;
+        }
+        el.innerHTML = html;
+      }
+
+      function updateOrderBookPanel() {
+        const el = document.getElementById("orderSides");
+        const c = companies.find((x) => x.symbol === currentSymbol) ||
+          companies[0] || { orderBook: { buy: [], sell: [] } };
+        const buys = (c.orderBook.buy || []).slice(0, 8);
+        const sells = (c.orderBook.sell || []).slice(0, 8);
+        let html =
+          '<div style="display:flex;justify-content:space-between"><div style="width:48%"><strong>Buy</strong></div><div style="width:48%;text-align:right"><strong>Sell</strong></div></div>';
+        const rows = Math.max(buys.length, sells.length);
+        for (let i = 0; i < rows; i++) {
+          const b = buys[i],
+            s = sells[i];
+          html += `<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0"><div style="width:48%;color:${
+            b ? "var(--up)" : "var(--muted)"
+          }">${
+            b ? b.price.toFixed(2) + " × " + b.amount : ""
+          }</div><div style="width:48%;text-align:right;color:${
+            s ? "var(--down)" : "var(--muted)"
+          }">${s ? s.price.toFixed(2) + " × " + s.amount : ""}</div></div>`;
+        }
+        el.innerHTML = html;
+      }
+
+      // Chart data store per symbol (keeps last 100 points)
+      const priceHistory = {}; // symbol -> [{ts,price}]
+      function pushPricePoint(symbol, price) {
+        if (!priceHistory[symbol]) priceHistory[symbol] = [];
+        priceHistory[symbol].push({ ts: Date.now(), price });
+        if (priceHistory[symbol].length > 200) priceHistory[symbol].shift();
+      }
+
+      function rebuildChartFor(symbol) {
+        const hist = priceHistory[symbol] || [];
+        chartData.labels = hist.map((p) => new Date(p.ts).toLocaleTimeString());
+        chartData.datasets[0].data = hist.map((p) => p.price);
+        priceChart.update();
+      }
+
+      // Handle incoming state
+      socket.on("state", (payload) => {
+        companies = payload.companies || [];
+        market = payload.market || market;
+        document.getElementById("interest").textContent =
+          "Interest: " + (market.interestRate || 0).toFixed(2);
+
+        // push new prices into history
+        companies.forEach((c) => {
+          pushPricePoint(c.symbol, c.price);
+        });
+
+        // update UI
+        renderCompaniesList();
+        updateOrderBookPanel();
+        updateDepthPanel();
+
+        // update last update time
+        document.getElementById("lastUpdate").textContent =
+          new Date().toLocaleTimeString();
+      });
+
+      socket.on("news", (msg) => {
+        const b = document.getElementById("newsBox");
+        const line = document.createElement("div");
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${
+          msg.text || msg.type || JSON.stringify(msg)
+        }`;
+        b.prepend(line);
+      });
+
+      // place order via HTTP or socket
+      document
+        .getElementById("placeBtn")
+        .addEventListener("click", async () => {
+          const symbol = document.getElementById("symbolSelect").value;
+          const side = document.getElementById("sideSelect").value;
+          const price = Number(document.getElementById("priceInput").value);
+          const amount = Number(document.getElementById("amountInput").value);
+          if (!symbol || !price || !amount) {
+            alert("symbol/price/amount required");
+            return;
+          }
+
+          // send via HTTP to keep consistent with server API
+          try {
+            await fetch(SERVER + "/order", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ symbol, side, price, amount }),
+            });
+          } catch (err) {
+            console.error("order fail", err);
+            alert("order failed");
+          }
+        });
+
+      // initial load via REST
+      async function initialLoad() {
+        try {
+          const res = await fetch(SERVER + "/companies");
+          const j = await res.json();
+          companies = j.companies || [];
+          companies.forEach((c) => pushPricePoint(c.symbol, c.price));
+          renderCompaniesList();
+          updateOrderBookPanel();
+          rebuildChartFor(companies[0] ? companies[0].symbol : null);
+        } catch (err) {
+          console.error("init load err", err);
+        }
+      }
+
+      initialLoad();
+
+      // keep chart moving: update dataset every second from stored history for selected symbol
+      setInterval(() => {
+        if (!currentSymbol) return;
+        const hist = priceHistory[currentSymbol] || [];
+        chartData.labels = hist.map((p) => new Date(p.ts).toLocaleTimeString());
+        chartData.datasets[0].data = hist.map((p) => p.price);
+        priceChart.update();
+      }, 1000);
+    </script>
+  </body>
+</html>
