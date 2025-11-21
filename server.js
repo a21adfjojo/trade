@@ -13,6 +13,17 @@ app.use(cors());
 app.use(express.static(__dirname));
 
 // ---------- Schemas ----------
+
+// Define a separate schema for order book entries
+const OrderEntrySchema = new mongoose.Schema({
+  actorId: { type: mongoose.Schema.Types.ObjectId, required: true }, // User or NPC ID
+  isNPC: { type: Boolean, required: true }, // true if NPC, false if User
+  price: { type: Number, required: true },
+  amount: { type: Number, required: true },
+  type: { type: String, enum: ["limit", "market", "stop"], required: true }, // "limit", "market", "stop"
+  stopPrice: { type: Number, default: null }, // Stop order trigger price
+});
+
 const CompanySchema = new mongoose.Schema({
   name: { type: String, unique: true },
   symbol: String,
@@ -22,26 +33,8 @@ const CompanySchema = new mongoose.Schema({
   fundamentals: { revenue: Number, profit: Number, rnd: Number },
   volatility: { type: Number, default: 0.02 },
   orderBook: {
-    buy: [
-      {
-        actorId: mongoose.Schema.Types.ObjectId, // User or NPC ID
-        isNPC: Boolean, // true if NPC, false if User
-        price: Number,
-        amount: Number,
-        type: String, // "limit", "market", "stop"
-        stopPrice: { type: Number, default: null }, // Stop order trigger price
-      },
-    ],
-    sell: [
-      {
-        actorId: mongoose.Schema.Types.ObjectId, // User or NPC ID
-        isNPC: Boolean, // true if NPC, false if User
-        price: Number,
-        amount: Number,
-        type: String, // "limit", "market", "stop"
-        stopPrice: { type: Number, default: null }, // Stop order trigger price
-      },
-    ],
+    buy: [OrderEntrySchema], // Use the defined OrderEntrySchema
+    sell: [OrderEntrySchema], // Use the defined OrderEntrySchema
   },
   lastUpdated: Date,
 });
@@ -102,7 +95,15 @@ async function addOrderToBook(
   amount,
   stopPrice = null
 ) {
-  const orderBookEntry = { actorId, isNPC, price, amount, type, stopPrice };
+  // Ensure actorId is a valid ObjectId before creating the entry
+  const orderBookEntry = {
+    actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
+    isNPC,
+    price,
+    amount,
+    type,
+    stopPrice,
+  };
   let ordersAdded = false;
 
   if (type === "market") {
@@ -125,7 +126,7 @@ async function addOrderToBook(
       const currentPrice = company.price; // 現在の市場価格
       if (side === "buy") {
         company.orderBook.buy.push({
-          actorId,
+          actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
           isNPC,
           price: currentPrice,
           amount: remainingAmount,
@@ -133,7 +134,7 @@ async function addOrderToBook(
         });
       } else {
         company.orderBook.sell.push({
-          actorId,
+          actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
           isNPC,
           price: currentPrice,
           amount: remainingAmount,
@@ -748,6 +749,9 @@ async function start() {
       useUnifiedTopology: true,
     });
     console.log("MongoDB connected!");
+    // It's good practice to clear the database and re-initialize if schema changes
+    // If you have existing data that causes issues, consider uncommenting these lines
+    // await mongoose.connection.db.dropDatabase();
     await initDB();
     await startLoops();
     const PORT = process.env.PORT || 8080;
