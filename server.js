@@ -106,12 +106,16 @@ async function matchCompanyOrders(company) {
       continue;
     }
 
-    const dealPrice =
-      buyer.type === "market"
-        ? company.price
-        : seller.type === "market"
-        ? company.price
-        : (buyer.price + seller.price) / 2;
+    let dealPrice;
+    if (buyer.type === "market") {
+      // 成行買いなら売り板の価格
+      dealPrice = seller.price;
+    } else if (seller.type === "market") {
+      // 成行売りなら買い板の価格
+      dealPrice = buyer.price;
+    } else {
+      dealPrice = (buyer.price + seller.price) / 2;
+    }
 
     lastPrice = dealPrice;
     company.volume = (company.volume || 0) + dealAmount;
