@@ -1,7 +1,7 @@
 {
-  "name": "stock-sim-server",
+  "name": "stock-sim-pro",
   "version": "1.0.0",
-  "description": "Fictional stock trading simulation server with WebSocket and MongoDB Atlas.",
+  "description": "Learning mode stock trading simulator with advanced orders",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,10 +9,8 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "ws": "^8.18.0",
-    "mongodb": "^6.9.0",
-    "mongoose": "^8.3.2",
     "socket.io": "^4.7.5",
+    "mongoose": "^7.5.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5"
   },
