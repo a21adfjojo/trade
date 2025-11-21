@@ -197,9 +197,17 @@ async function marketTick() {
       company.price * imbalanceImpact * drift * interestBias * noiseFactor;
     newPrice = company.price * clamp(newPrice / company.price, 0.9, 1.1);
     if (newPrice < 1) newPrice = 1;
-    company.price = Number(newPrice.toFixed(4));
-    company.lastUpdated = new Date();
-    await company.save();
+    // 株価計算
+    const updatedFields = {
+      price: Number(newPrice.toFixed(4)),
+      volume: company.volume,
+      orderBook: company.orderBook,
+      lastUpdated: new Date(),
+    };
+    await Company.findOneAndUpdate(
+      { _id: company._id },
+      { $set: updatedFields }
+    );
   }
   await broadcastState();
 }
@@ -318,13 +326,28 @@ io.on("connection", async (socket) => {
       type,
       stopPrice
     );
-    matchCompanyOrders(company);
-    await company.save();
-    if (side === "buy") socket.user.balance -= price * amount;
-    else
-      socket.user.holdings[symbol] =
-        (socket.user.holdings[symbol] || 0) - amount;
+    const trades = matchCompanyOrders(company); // 約定情報を返すようにする
+
+    await Company.findOneAndUpdate(
+      { _id: company._id },
+      {
+        $set: {
+          orderBook: company.orderBook,
+          price: company.price,
+          volume: company.volume,
+        },
+      }
+    );
+
+    // 成行注文の場合は matchCompanyOrders の約定価格で残高/株数を更新
+    for (let t of trades) {
+      if (t.userId && t.userId.equals(socket.user._id)) {
+        if (side === "buy") socket.user.balance -= t.price * t.amount;
+        else socket.user.holdings[symbol] -= t.amount;
+      }
+    }
     await socket.user.save();
+
     await broadcastState();
   });
 });
