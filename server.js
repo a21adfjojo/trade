@@ -363,14 +363,28 @@ io.on("connection", async (socket) => {
     const company = await Company.findOne({ symbol });
     if (!company) return socket.emit("err", "会社が見つかりません");
 
-    // 成行の場合は現在株価を使用
-    const finalPrice = type === "market" ? company.price : price;
+    let trades = [];
 
-    // 注文を追加
-    addOrderToBook(company, side, finalPrice, amount, socket.user._id, type);
+    if (type === "market") {
+      // 成行注文：板には入れず即約定
+      const tempOrder = {
+        price: company.price,
+        amount,
+        userId: socket.user._id,
+        type,
+      };
+      if (side === "buy")
+        company.orderBook.buy.unshift(tempOrder); // 仮の買い注文
+      else company.orderBook.sell.unshift(tempOrder); // 仮の売り注文
 
-    // 約定処理を await
-    await matchCompanyOrders(company);
+      trades = await matchCompanyOrders(company);
+
+      // 仮注文は削除済みなので板はそのまま
+    } else {
+      // 指値注文：板に追加してマッチング
+      addOrderToBook(company, side, price, amount, socket.user._id, type);
+      trades = await matchCompanyOrders(company);
+    }
 
     // 最新のユーザー情報を DB から取得して socket.user に反映
     const freshUser = await User.findById(socket.user._id);
