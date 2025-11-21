@@ -104,59 +104,29 @@ async function addOrderToBook(
     type,
     stopPrice,
   };
-  let ordersAdded = false;
 
   if (type === "market") {
-    let remainingAmount = amount;
+    // Market orders are executed immediately and do not go into the order book.
+    // The remainingAmount will simply be the portion that could not be filled.
     if (side === "buy") {
-      remainingAmount = await executeMarketBuy(actorId, isNPC, company, amount);
+      await executeMarketBuy(actorId, isNPC, company, amount);
     } else if (side === "sell") {
-      remainingAmount = await executeMarketSell(
-        actorId,
-        isNPC,
-        company,
-        amount
-      );
+      await executeMarketSell(actorId, isNPC, company, amount);
     }
-    // 成行で約定しきれなかった分は、現在の市場価格で指値として板に残す (通常は起こらないが安全策)
-    if (remainingAmount > 0) {
-      console.warn(
-        `Market order for ${company.symbol} (${side}) could not be fully filled. Remaining ${remainingAmount} units added as limit order at current price.`
-      );
-      const currentPrice = company.price; // 現在の市場価格
-      if (side === "buy") {
-        company.orderBook.buy.push({
-          actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
-          isNPC,
-          price: currentPrice,
-          amount: remainingAmount,
-          type: "limit",
-        });
-      } else {
-        company.orderBook.sell.push({
-          actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
-          isNPC,
-          price: currentPrice,
-          amount: remainingAmount,
-          type: "limit",
-        });
-      }
-      ordersAdded = true;
-    }
+    // No 'remainingAmount' is added back to the order book for market orders.
+    // The company object's orderBook, price, and volume are updated directly by executeMarketBuy/Sell.
+    // No need to sort order book here as no orders were added to it.
   } else if (type === "limit" || type === "stop") {
-    // stop注文も一旦は板に追加するが、stopPriceを記録しておく
+    // Limit and stop orders are added to the order book.
     if (side === "buy") {
       company.orderBook.buy.push(orderBookEntry);
     } else {
       company.orderBook.sell.push(orderBookEntry);
     }
-    ordersAdded = true;
+    sortOrderBook(company.orderBook); // Sort after adding
   }
-
-  if (ordersAdded) {
-    sortOrderBook(company.orderBook);
-  }
-  return company;
+  // No need to return company here, as it's modified by reference.
+  // The caller (runNpcActions or placeOrder) will save the company document.
 }
 
 async function matchCompanyOrders(company) {
@@ -190,7 +160,7 @@ async function matchCompanyOrders(company) {
         company,
         "buy",
         "market",
-        currentPrice,
+        currentPrice, // 成行の場合、この価格は無視されるが、引数として渡す
         triggeredOrder.amount
       );
       orderBookChanged = true;
@@ -216,7 +186,7 @@ async function matchCompanyOrders(company) {
         company,
         "sell",
         "market",
-        currentPrice,
+        currentPrice, // 成行の場合、この価格は無視されるが、引数として渡す
         triggeredOrder.amount
       );
       orderBookChanged = true;
@@ -495,21 +465,18 @@ async function runNpcActions() {
     if (side === "sell" && (npc.holdings[target.symbol] || 0) < amount) {
       continue;
     }
-    // 買い注文だが資金が足りない場合はスキップ
+    // 買い注文だが資金が足りない場合はスキップ (成行買いの場合はexecuteMarketBuy内でチェック)
     if (side === "buy" && npc.balance < price * amount && type === "limit") {
       continue;
     }
-    // 成行買いの場合、資金が足りるかどうかのチェックはexecuteMarketBuy内で行われる
 
-    // addOrderToBook を新しいシグネチャで呼び出す
+    // addOrderToBook を呼び出す
     await addOrderToBook(npc._id, true, target, side, type, price, amount);
 
-    // ここでマッチングを await して約定を反映させる
-    // addOrderToBook の中で market order は既にマッチングされているが、
-    // limit/stop order は matchCompanyOrders でマッチングされる。
+    // 追加された注文と既存の注文のマッチングを試みる (成行注文はaddOrderToBook内で処理済み)
     await matchCompanyOrders(target);
 
-    // Company は matchCompanyOrders の中で更新されているため、ここでは orderBook を保存
+    // Company ドキュメントを更新
     await Company.updateOne(
       { _id: target._id },
       {
@@ -520,9 +487,7 @@ async function runNpcActions() {
         },
       }
     );
-    // NPC の holdings と balance は matchCompanyOrders の中で update されているので、ここでは不要
-    // ただし、NPCドキュメント自体を最新の状態に保つために、findAndUpdateなどで更新されたNPCドキュメントを再取得するか、
-    // save()を呼び出す必要がある。matchCompanyOrders内でsave()を呼んでいるので、ここでは不要。
+    // NPC の holdings と balance は matchCompanyOrders の中で save() されているので、ここでは不要
   }
 
   await broadcastState();
@@ -575,7 +540,7 @@ async function executeMarketBuy(actorId, isNPC, company, amount) {
       console.warn(
         `Market buy for ${company.symbol} (actor: ${actorId}) failed due to insufficient funds.`
       );
-      break;
+      break; // 資金不足でこれ以上買えない
     }
     buyerDoc.balance -= totalCost;
     buyerDoc.holdings[company.symbol] =
@@ -604,7 +569,7 @@ async function executeMarketBuy(actorId, isNPC, company, amount) {
     remaining -= dealAmount;
   }
 
-  return remaining;
+  return remaining; // 約定しなかった残量
 }
 
 // 成行売り注文の実行
@@ -627,7 +592,7 @@ async function executeMarketSell(actorId, isNPC, company, amount) {
       console.warn(
         `Market sell for ${company.symbol} (actor: ${actorId}) failed due to insufficient holdings.`
       );
-      break;
+      break; // 株不足でこれ以上売れない
     }
     sellerDoc.balance += totalGain;
     sellerDoc.holdings[company.symbol] -= dealAmount;
@@ -655,7 +620,7 @@ async function executeMarketSell(actorId, isNPC, company, amount) {
     remaining -= dealAmount;
   }
 
-  return remaining;
+  return remaining; // 約定しなかった残量
 }
 
 // ---------- Socket.io ----------
@@ -702,7 +667,7 @@ io.on("connection", async (socket) => {
       stopPrice
     );
 
-    // 追加された注文と既存の注文のマッチングを試みる
+    // 追加された注文と既存の注文のマッチングを試みる (成行注文はaddOrderToBook内で処理済み)
     await matchCompanyOrders(company);
 
     // Company ドキュメントを更新
