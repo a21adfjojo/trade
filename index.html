@@ -62,18 +62,6 @@
         color: #fff;
         cursor: pointer;
       }
-
-      /* Responsive adjustments for smaller screens */
-      @media (max-width: 768px) {
-        #controls {
-          grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-        }
-      }
-      @media (max-width: 480px) {
-        #controls {
-          grid-template-columns: 1fr; /* Stack items vertically on very small screens */
-        }
-      }
     </style>
   </head>
   <body>
@@ -126,7 +114,7 @@
     </div>
 
     <div class="section" id="orderBook">
-      <h4>Order Book (<span id="currentSymbolName"></span>)</h4>
+      <h4>Order Book</h4>
       <div id="buyOrders"></div>
       <div id="sellOrders"></div>
     </div>
@@ -143,13 +131,6 @@
       let companies = [],
         priceHistory = {},
         chart = null;
-      const MAX_CHART_HISTORY = 50; // Maximum data points for the chart
-
-      // Function to generate distinct HSL colors
-      function getRandomColor(index, total) {
-        const hue = (index * 137 + 100) % 360; // Use golden angle approximation for even distribution
-        return `hsl(${hue}, 70%, 50%)`;
-      }
 
       // ページロード時に注文フォームの表示を更新
       document.addEventListener("DOMContentLoaded", () => {
@@ -189,32 +170,23 @@
       socket.on("state", (payload) => {
         companies = payload.companies;
         const sel = document.getElementById("symbolSelect");
-
-        // Update symbol dropdown if it's empty or companies have changed
-        if (
-          sel.options.length === 0 ||
-          sel.options.length !== companies.length
-        ) {
-          sel.innerHTML = ""; // Clear existing options
+        // 銘柄リストが空の場合のみ更新
+        if (sel.options.length === 0 && companies.length > 0) {
           companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
-          // Set a default selected symbol if none is selected
-          if (sel.value === "" && companies.length > 0) {
-            sel.value = companies[0].symbol;
-          }
+          // 初回ロード時にチャートと板情報を更新
+          updateOrderBook();
+          updateChart();
         }
 
-        // Update price history for ALL companies
+        // 価格履歴
         companies.forEach((c) => {
           if (!priceHistory[c.symbol]) priceHistory[c.symbol] = [];
           priceHistory[c.symbol].push(c.price);
-          if (priceHistory[c.symbol].length > MAX_CHART_HISTORY) {
+          if (priceHistory[c.symbol].length > 50)
             priceHistory[c.symbol].shift();
-          }
         });
-
-        // Update chart for all companies
-        updateAllCompanyCharts();
-        // Update order book for the currently selected company
+        // 選択されている銘柄のチャートと板情報を更新
+        updateChart();
         updateOrderBook();
       });
 
@@ -272,8 +244,7 @@
       // 銘柄選択が変更されたときに板情報とチャートを更新
       document.getElementById("symbolSelect").addEventListener("change", () => {
         updateOrderBook();
-        // The main chart now shows all companies, so no need to re-render it here based on selection.
-        // updateAllCompanyCharts(); // Only if you want to highlight the selected symbol or something specific.
+        updateChart();
       });
 
       function updatePortfolio() {
@@ -292,9 +263,6 @@
         const selectedSymbol = document.getElementById("symbolSelect").value;
         const company = companies.find((c) => c.symbol === selectedSymbol);
 
-        document.getElementById("currentSymbolName").textContent =
-          selectedSymbol;
-
         if (!company) {
           document.getElementById("buyOrders").innerHTML =
             "<b>買い板</b><br>選択された銘柄のデータがありません";
@@ -310,7 +278,7 @@
             .map(
               (o) =>
                 `${o.price.toFixed(2)} : ${o.amount}${
-                  o.type === "stop" && o.stopPrice !== null
+                  o.type === "stop"
                     ? " (Stop:" + o.stopPrice.toFixed(2) + ")"
                     : ""
                 }`
@@ -322,7 +290,7 @@
             .map(
               (o) =>
                 `${o.price.toFixed(2)} : ${o.amount}${
-                  o.type === "stop" && o.stopPrice !== null
+                  o.type === "stop"
                     ? " (Stop:" + o.stopPrice.toFixed(2) + ")"
                     : ""
                 }`
@@ -330,31 +298,43 @@
             .join("<br>");
       }
 
-      function updateAllCompanyCharts() {
+      function updateChart() {
         const ctx = document.getElementById("priceChart").getContext("2d");
+        // const selectedSymbol = document.getElementById("symbolSelect").value; // 選択銘柄に限定しない
 
-        const datasets = companies.map((c, index) => {
-          const data = priceHistory[c.symbol] || [];
-          const color = getRandomColor(index, companies.length);
+        // priceHistoryにデータがある全ての銘柄のシンボルを取得
+        const allSymbols = Object.keys(priceHistory).filter(
+          (sym) => priceHistory[sym].length > 0
+        );
+
+        if (allSymbols.length === 0) {
+          // チャートデータがない場合はクリア
+          if (chart) {
+            chart.destroy();
+            chart = null;
+          }
+          return;
+        }
+
+        // ラベルは、価格履歴の長さに応じて動的に生成
+        // (ここでは最初の銘柄の履歴の長さを基準とします)
+        const labels = priceHistory[allSymbols[0]].map((_, i) => i + 1);
+
+        // すべての銘柄のデータセットを作成
+        const datasets = allSymbols.map((symbol, index) => {
+          const data = priceHistory[symbol];
+          // 銘柄ごとに異なる色を割り当てる (例: HSLの色相をずらす)
+          const hue = (index * 60) % 360; // 60度ずつ色相をずらす
+          const color = `hsl(${hue}, 80%, 50%)`;
+
           return {
-            label: c.symbol,
+            label: symbol,
             data: data,
             borderColor: color,
             backgroundColor: "transparent",
             tension: 0.2,
-            pointRadius: 0, // Hide points for cleaner lines
           };
         });
-
-        // Generate labels based on the longest history, up to MAX_CHART_HISTORY
-        const maxHistoryLength = Math.max(
-          ...Object.values(priceHistory).map((arr) => arr.length),
-          0
-        );
-        const labels = Array.from(
-          { length: maxHistoryLength },
-          (_, i) => i + 1
-        );
 
         if (!chart) {
           chart = new Chart(ctx, {
@@ -362,40 +342,13 @@
             data: { labels, datasets },
             options: {
               responsive: true,
-              maintainAspectRatio: false, // Allow canvas to resize freely
               animation: false,
-              plugins: {
-                legend: {
-                  position: "top",
-                  labels: {
-                    color: "#eee", // Legend text color
-                  },
-                },
-                tooltip: {
-                  mode: "index",
-                  intersect: false,
-                },
-              },
-              scales: {
-                x: {
-                  display: false, // Hide x-axis labels for a cleaner look
-                  grid: {
-                    color: "rgba(255, 255, 255, 0.1)",
-                  },
-                },
-                y: {
-                  beginAtZero: false,
-                  grid: {
-                    color: "rgba(255, 255, 255, 0.1)",
-                  },
-                  ticks: {
-                    color: "#eee", // Y-axis tick labels color
-                  },
-                },
-              },
+              plugins: { legend: { position: "top" } },
+              scales: { y: { beginAtZero: false } },
             },
           });
         } else {
+          // 既存のチャートを更新
           chart.data.datasets = datasets;
           chart.data.labels = labels;
           chart.update();
