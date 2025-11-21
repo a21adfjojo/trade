@@ -76,26 +76,44 @@ function matchCompanyOrders(company) {
   const buy = company.orderBook.buy;
   const sell = company.orderBook.sell;
   let lastPrice = company.price;
+  const trades = []; // ここに約定情報を保存
+
   while (buy.length && sell.length && buy[0].price >= sell[0].price) {
     const dealPrice = (buy[0].price + sell[0].price) / 2;
     const dealAmount = Math.min(buy[0].amount, sell[0].amount);
     lastPrice = dealPrice;
     company.volume = (company.volume || 0) + dealAmount;
-    buy[0].amount -= dealAmount;
-    sell[0].amount -= dealAmount;
 
-    io.emit("trade", {
+    const trade = {
       symbol: company.symbol,
       price: dealPrice,
       amount: dealAmount,
+      buyUserId: buy[0].userId,
+      sellUserId: sell[0].userId,
       timestamp: new Date(),
-    });
+    };
+    trades.push(trade);
+
+    io.emit("trade", trade);
+
+    buy[0].amount -= dealAmount;
+    sell[0].amount -= dealAmount;
 
     if (buy[0].amount <= 0) buy.shift();
     if (sell[0].amount <= 0) sell.shift();
   }
+
   company.price = clamp(lastPrice, 1, Number.MAX_SAFE_INTEGER);
+  return trades; // ← 約定情報を返す
 }
+
+/*************  ✨ Windsurf Command ⭐  *************/
+/**
+ * Compute imbalance of buy and sell orders in a company.
+ * Imbalance is calculated as (buyVol - sellVol) / (buyVol + sellVol)
+ * @param {object} company - Company object with orderBook field
+ * @returns {number} Imbalance value between -1 and 1
+/*******  ff49263d-337c-4a9d-9546-502639631f2d  *******/
 function computeImbalance(company) {
   const buyVol = (company.orderBook.buy || []).reduce(
     (s, o) => s + o.amount,
@@ -341,11 +359,19 @@ io.on("connection", async (socket) => {
 
     // 成行注文の場合は matchCompanyOrders の約定価格で残高/株数を更新
     for (let t of trades) {
-      if (t.userId && t.userId.equals(socket.user._id)) {
-        if (side === "buy") socket.user.balance -= t.price * t.amount;
-        else socket.user.holdings[symbol] -= t.amount;
+      // 買いユーザーが自分なら残高を減らし株数を増やす
+      if (t.buyUserId && t.buyUserId.equals(socket.user._id)) {
+        socket.user.balance -= t.price * t.amount;
+        socket.user.holdings[symbol] =
+          (socket.user.holdings[symbol] || 0) + t.amount;
+      }
+      // 売りユーザーが自分なら株数を減らし残高を増やす
+      if (t.sellUserId && t.sellUserId.equals(socket.user._id)) {
+        socket.user.holdings[symbol] -= t.amount;
+        socket.user.balance += t.price * t.amount;
       }
     }
+
     await socket.user.save();
 
     await broadcastState();
