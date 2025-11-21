@@ -365,11 +365,17 @@ io.on("connection", async (socket) => {
     const company = await Company.findOne({ symbol });
     if (!company) return socket.emit("err", "会社が見つかりません");
 
-    if (type === "market") {
-      // 成行注文：板に入れず即約定
+    // 成行注文かどうかで処理を分ける
+    if (type === "limit") {
+      // 指値は板に追加
+      addOrderToBook(company, side, price, amount, socket.user._id, type);
+      await matchCompanyOrders(company);
+    } else if (type === "market") {
+      // 成行注文は即約定
       let remaining = amount;
 
       if (side === "buy") {
+        // 売り板の最安値から約定
         while (remaining > 0 && company.orderBook.sell.length) {
           const seller = company.orderBook.sell[0];
           const dealAmount = Math.min(remaining, seller.amount);
@@ -381,6 +387,7 @@ io.on("connection", async (socket) => {
 
           const dealPrice = seller.price;
 
+          // ユーザー残高・株数更新
           if (buyerDoc) {
             buyerDoc.balance -= dealAmount * dealPrice;
             buyerDoc.holdings[company.symbol] =
@@ -393,24 +400,26 @@ io.on("connection", async (socket) => {
             await sellerDoc.save();
           }
 
+          // 板から数量減らす
           seller.amount -= dealAmount;
-          remaining -= dealAmount;
           if (seller.amount <= 0) company.orderBook.sell.shift();
+
+          remaining -= dealAmount;
 
           io.emit("trade", {
             symbol: company.symbol,
             price: dealPrice,
             amount: dealAmount,
-            buyUserId: buyerDoc._id,
-            sellUserId: sellerDoc?._id || null,
+            buyUserId: socket.user._id,
+            sellUserId: seller.userId,
             timestamp: new Date(),
           });
 
-          company.volume += dealAmount;
-          company.price = dealPrice;
+          company.volume = (company.volume || 0) + dealAmount;
+          company.price = dealPrice; // 最後の約定価格で更新
         }
-      } else {
-        // 売り成行
+      } else if (side === "sell") {
+        // 買い板の最高値から約定
         while (remaining > 0 && company.orderBook.buy.length) {
           const buyer = company.orderBook.buy[0];
           const dealAmount = Math.min(remaining, buyer.amount);
@@ -436,32 +445,28 @@ io.on("connection", async (socket) => {
           }
 
           buyer.amount -= dealAmount;
-          remaining -= dealAmount;
           if (buyer.amount <= 0) company.orderBook.buy.shift();
+
+          remaining -= dealAmount;
 
           io.emit("trade", {
             symbol: company.symbol,
             price: dealPrice,
             amount: dealAmount,
-            buyUserId: buyerDoc?._id || null,
-            sellUserId: sellerDoc._id,
+            buyUserId: buyer.userId,
+            sellUserId: socket.user._id,
             timestamp: new Date(),
           });
 
-          company.volume += dealAmount;
+          company.volume = (company.volume || 0) + dealAmount;
           company.price = dealPrice;
         }
       }
-    } else {
-      // 指値注文：板に追加して約定処理
-      addOrderToBook(company, side, price, amount, socket.user._id, type);
-      await matchCompanyOrders(company);
     }
 
-    // 最新のユーザー情報を送信
+    // 最新ユーザー情報を取得して返す
     const freshUser = await User.findById(socket.user._id);
     socket.user = freshUser;
-
     socket.emit("userData", {
       balance: freshUser.balance,
       holdings: freshUser.holdings,
@@ -480,6 +485,7 @@ io.on("connection", async (socket) => {
       }
     );
 
+    // 全体状態ブロードキャスト
     await broadcastState();
   });
 });
