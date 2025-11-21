@@ -107,13 +107,6 @@ function matchCompanyOrders(company) {
   return trades; // ← 約定情報を返す
 }
 
-/*************  ✨ Windsurf Command ⭐  *************/
-/**
- * Compute imbalance of buy and sell orders in a company.
- * Imbalance is calculated as (buyVol - sellVol) / (buyVol + sellVol)
- * @param {object} company - Company object with orderBook field
- * @returns {number} Imbalance value between -1 and 1
-/*******  ff49263d-337c-4a9d-9546-502639631f2d  *******/
 function computeImbalance(company) {
   const buyVol = (company.orderBook.buy || []).reduce(
     (s, o) => s + o.amount,
