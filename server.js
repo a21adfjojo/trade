@@ -277,8 +277,17 @@ async function runNpcActions() {
         );
     }
     matchCompanyOrders(target);
-    await target.save();
-    await npc.save();
+    await Company.updateOne(
+      { _id: target._id },
+      {
+        $set: {
+          orderBook: target.orderBook,
+          price: target.price,
+          volume: target.volume,
+        },
+      }
+    );
+    await NPC.updateOne({ _id: npc._id }, { $set: { holdings: npc.holdings } });
   }
   await broadcastState();
 }
