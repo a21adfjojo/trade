@@ -62,6 +62,12 @@
         color: #fff;
         cursor: pointer;
       }
+      /* レスポンシブ対応 */
+      @media (max-width: 600px) {
+        #controls {
+          grid-template-columns: 1fr; /* 狭い画面では1列にする */
+        }
+      }
     </style>
   </head>
   <body>
@@ -148,7 +154,7 @@
           } else if (selectedType === "limit") {
             priceInput.disabled = false;
             stopInput.disabled = true;
-            stopInput.value = "";
+            stopInput.value = ""; // 指値の場合もストップ価格入力をクリア
           } else if (selectedType === "stop") {
             priceInput.disabled = false; // 逆指値の場合も指値価格を入力させる
             stopInput.disabled = false;
@@ -167,15 +173,28 @@
         updatePortfolio();
       });
 
+      // 銘柄リストの更新ロジックを修正
       socket.on("state", (payload) => {
         companies = payload.companies;
         const sel = document.getElementById("symbolSelect");
-        // 銘柄リストが空の場合のみ更新
-        if (sel.options.length === 0 && companies.length > 0) {
-          companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
-          // 初回ロード時にチャートと板情報を更新
-          updateOrderBook();
-          updateChart();
+        const currentSelection = sel.value; // 現在選択されている銘柄を保持
+
+        // 既存のオプションを全てクリア
+        while (sel.options.length > 0) {
+          sel.remove(0);
+        }
+
+        // 新しいオプションを追加
+        companies.forEach((c) => sel.add(new Option(c.symbol, c.symbol)));
+
+        // 以前選択されていた銘柄があればそれを再選択、なければ最初の銘柄を選択
+        const symbolExists = companies.some(
+          (c) => c.symbol === currentSelection
+        );
+        if (symbolExists) {
+          sel.value = currentSelection; // 既存の選択を維持
+        } else if (companies.length > 0) {
+          sel.value = companies[0].symbol; // 最初の銘柄をデフォルトで選択
         }
 
         // 価格履歴
@@ -251,8 +270,8 @@
         const div = document.getElementById("portfolio");
         let html = "";
         for (const sym in currentUser.holdings) {
+          // 保有株数が0より大きい場合のみ表示
           if (currentUser.holdings[sym] > 0) {
-            // 保有株数が0より大きい場合のみ表示
             html += `${sym}: ${currentUser.holdings[sym]}株<br>`;
           }
         }

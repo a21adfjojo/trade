@@ -14,14 +14,14 @@ app.use(express.static(__dirname));
 
 // ---------- Schemas ----------
 
-// Define a separate schema for order book entries
+// 注文板のエントリーのためのスキーマを定義
 const OrderEntrySchema = new mongoose.Schema({
-  actorId: { type: mongoose.Schema.Types.ObjectId, required: true }, // User or NPC ID
-  isNPC: { type: Boolean, required: true }, // true if NPC, false if User
+  actorId: { type: mongoose.Schema.Types.ObjectId, required: true }, // 注文を出したユーザーまたはNPCのID
+  isNPC: { type: Boolean, required: true }, // NPCからの注文なら true、ユーザーからの注文なら false
   price: { type: Number, required: true },
   amount: { type: Number, required: true },
-  type: { type: String, enum: ["limit", "market", "stop"], required: true }, // "limit", "market", "stop"
-  stopPrice: { type: Number, default: null }, // Stop order trigger price
+  type: { type: String, enum: ["limit", "market", "stop"], required: true }, // "limit" (指値), "market" (成行), "stop" (逆指値)
+  stopPrice: { type: Number, default: null }, // 逆指値注文のトリガー価格
 });
 
 const CompanySchema = new mongoose.Schema({
@@ -33,18 +33,18 @@ const CompanySchema = new mongoose.Schema({
   fundamentals: { revenue: Number, profit: Number, rnd: Number },
   volatility: { type: Number, default: 0.02 },
   orderBook: {
-    buy: [OrderEntrySchema], // Use the defined OrderEntrySchema
-    sell: [OrderEntrySchema], // Use the defined OrderEntrySchema
+    buy: [OrderEntrySchema], // 買い注文のリスト
+    sell: [OrderEntrySchema], // 売り注文のリスト
   },
   lastUpdated: Date,
 });
 
 const NPCSchema = new mongoose.Schema({
   name: String,
-  type: String, // e.g., "short", "long", "trend"
-  funds: Number,
-  holdings: { type: Object, default: {} },
-  balance: { type: Number, default: 0 }, // NPCにもbalanceを追加
+  type: String, // 例: "short", "long", "trend" (NPCの取引戦略)
+  funds: Number, // 初期資金
+  holdings: { type: Object, default: {} }, // 保有株 (シンボル: 数量)
+  balance: { type: Number, default: 0 }, // NPCの現在の残高
 });
 
 const MarketSchema = new mongoose.Schema({
@@ -53,9 +53,9 @@ const MarketSchema = new mongoose.Schema({
 });
 
 const UserSchema = new mongoose.Schema({
-  ip: { type: String, unique: true },
-  balance: { type: Number, default: 100000 },
-  holdings: { type: Object, default: {} },
+  ip: { type: String, unique: true }, // ユーザーを識別するためのIPアドレス（簡易的な識別子）
+  balance: { type: Number, default: 100000 }, // ユーザーの残高
+  holdings: { type: Object, default: {} }, // ユーザーの保有株 (シンボル: 数量)
   learningMode: { type: Boolean, default: true },
 });
 
@@ -70,7 +70,7 @@ function clamp(v, lo, hi) {
 }
 
 function sortOrderBook(book) {
-  // 買い注文は価格が高い順、売り注文は価格が安い順
+  // 買い注文は価格が高い順、売り注文は価格が安い順にソート
   book.buy.sort((a, b) => b.price - a.price);
   book.sell.sort((a, b) => a.price - b.price);
 }
@@ -85,6 +85,7 @@ async function getActorDocument(actorId, isNPC) {
   }
 }
 
+// 注文を注文板に追加する、または成行注文を即時実行する関数
 async function addOrderToBook(
   actorId,
   isNPC,
@@ -95,9 +96,9 @@ async function addOrderToBook(
   amount,
   stopPrice = null
 ) {
-  // Ensure actorId is a valid ObjectId before creating the entry
+  // 注文エントリーを作成
   const orderBookEntry = {
-    actorId: new mongoose.Types.ObjectId(actorId), // Ensure ObjectId type
+    actorId: new mongoose.Types.ObjectId(actorId), // actorIdをObjectId型に変換
     isNPC,
     price,
     amount,
@@ -106,44 +107,39 @@ async function addOrderToBook(
   };
 
   if (type === "market") {
-    // Market orders are executed immediately and do not go into the order book.
-    // The remainingAmount will simply be the portion that could not be filled.
+    // 成行注文は即座に約定を試みるため、注文板には追加しない
     if (side === "buy") {
       await executeMarketBuy(actorId, isNPC, company, amount);
     } else if (side === "sell") {
       await executeMarketSell(actorId, isNPC, company, amount);
     }
-    // No 'remainingAmount' is added back to the order book for market orders.
-    // The company object's orderBook, price, and volume are updated directly by executeMarketBuy/Sell.
-    // No need to sort order book here as no orders were added to it.
+    // 成行注文の場合、注文板のソートは不要
   } else if (type === "limit" || type === "stop") {
-    // Limit and stop orders are added to the order book.
+    // 指値注文と逆指値注文は注文板に追加
     if (side === "buy") {
       company.orderBook.buy.push(orderBookEntry);
     } else {
       company.orderBook.sell.push(orderBookEntry);
     }
-    sortOrderBook(company.orderBook); // Sort after adding
+    sortOrderBook(company.orderBook); // 追加後に注文板をソート
   }
-  // No need to return company here, as it's modified by reference.
-  // The caller (runNpcActions or placeOrder) will save the company document.
+  // companyオブジェクトは参照渡しされているため、呼び出し元で保存する必要がある
 }
 
+// 注文板のマッチングを行い、取引を成立させる関数
 async function matchCompanyOrders(company) {
   const buy = company.orderBook.buy;
   const sell = company.orderBook.sell;
   let lastPrice = company.price;
   const trades = [];
 
-  // Stop orders check and trigger (simplified)
-  // This is a very basic check. A robust system would need a dedicated stop order queue
-  // and more sophisticated trigger logic.
+  // ストップ注文のトリガーチェック (簡略化されたロジック)
   const currentPrice = company.price;
   let orderBookChanged = false;
 
   // 買いストップ注文のトリガー (価格がstopPriceを上回ったら買い)
+  // 後ろからループして削除に対応
   for (let i = buy.length - 1; i >= 0; i--) {
-    // 後ろからループして削除に対応
     if (
       buy[i].type === "stop" &&
       buy[i].stopPrice !== null &&
@@ -152,15 +148,15 @@ async function matchCompanyOrders(company) {
       console.log(
         `Triggering stop buy for ${company.symbol} (actor: ${buy[i].actorId}) at ${currentPrice}`
       );
-      // ストップ注文を成行買いに変換
-      const triggeredOrder = buy.splice(i, 1)[0]; // 注文を板から削除
+      // ストップ注文を板から削除し、成行買いに変換して再処理
+      const triggeredOrder = buy.splice(i, 1)[0];
       await addOrderToBook(
         triggeredOrder.actorId,
         triggeredOrder.isNPC,
         company,
         "buy",
         "market",
-        currentPrice, // 成行の場合、この価格は無視されるが、引数として渡す
+        currentPrice,
         triggeredOrder.amount
       );
       orderBookChanged = true;
@@ -168,8 +164,8 @@ async function matchCompanyOrders(company) {
   }
 
   // 売りストップ注文のトリガー (価格がstopPriceを下回ったら売り)
+  // 後ろからループして削除に対応
   for (let i = sell.length - 1; i >= 0; i--) {
-    // 後ろからループして削除に対応
     if (
       sell[i].type === "stop" &&
       sell[i].stopPrice !== null &&
@@ -178,15 +174,15 @@ async function matchCompanyOrders(company) {
       console.log(
         `Triggering stop sell for ${company.symbol} (actor: ${sell[i].actorId}) at ${currentPrice}`
       );
-      // ストップ注文を成行売りに変換
-      const triggeredOrder = sell.splice(i, 1)[0]; // 注文を板から削除
+      // ストップ注文を板から削除し、成行売りに変換して再処理
+      const triggeredOrder = sell.splice(i, 1)[0];
       await addOrderToBook(
         triggeredOrder.actorId,
         triggeredOrder.isNPC,
         company,
         "sell",
         "market",
-        currentPrice, // 成行の場合、この価格は無視されるが、引数として渡す
+        currentPrice,
         triggeredOrder.amount
       );
       orderBookChanged = true;
@@ -197,11 +193,12 @@ async function matchCompanyOrders(company) {
     sortOrderBook(company.orderBook); // 新しく追加された成行注文をソート
   }
 
+  // 買い注文と売り注文をマッチング
   while (buy.length && sell.length && buy[0].price >= sell[0].price) {
     const buyerOrder = buy[0];
     const sellerOrder = sell[0];
 
-    // Get actor documents
+    // 買い手と売り手のドキュメントを取得
     const buyerDoc = await getActorDocument(
       buyerOrder.actorId,
       buyerOrder.isNPC
@@ -213,45 +210,27 @@ async function matchCompanyOrders(company) {
 
     let dealAmount = Math.min(buyerOrder.amount, sellerOrder.amount);
 
-    // 買い手側の資金チェック
+    // 買い手側の資金チェック (指値注文のみ)
     if (buyerDoc && buyerOrder.type !== "market") {
-      // 成行買いは板の価格で判断されるため、指値買いのみチェック
       const affordable = Math.floor(buyerDoc.balance / buyerOrder.price);
       dealAmount = Math.min(dealAmount, affordable);
     }
 
-    // 売り手側の保有株チェック
+    // 売り手側の保有株チェック (指値注文のみ)
     if (sellerDoc && sellerOrder.type !== "market") {
-      // 成行売りは板の価格で判断されるため、指値売りのみチェック
       const available = sellerDoc.holdings[company.symbol] || 0;
       dealAmount = Math.min(dealAmount, available);
     }
 
+    // 約定量が0の場合、これ以上約定できないため両方の注文を板から削除
     if (dealAmount <= 0) {
-      // 取引できない場合は注文を板から削除 (資金不足や株不足の場合)
-      // どちらかの注文が約定できない場合はその注文を削除して次へ
-      if (
-        buyerDoc &&
-        (buyerDoc.balance < buyerOrder.price * buyerOrder.amount ||
-          dealAmount === 0)
-      ) {
-        buy.shift();
-      } else if (
-        sellerDoc &&
-        ((sellerDoc.holdings[company.symbol] || 0) < sellerOrder.amount ||
-          dealAmount === 0)
-      ) {
-        sell.shift();
-      } else {
-        // それでも dealAmount が 0 なら無限ループを避けるために両方削除
-        buy.shift();
-        sell.shift();
-      }
+      buy.shift();
+      sell.shift();
       continue;
     }
 
     let dealPrice;
-    // 成行注文の価格決定ロジックを修正
+    // 約定価格の決定ロジック
     if (buyerOrder.type === "market") {
       dealPrice = sellerOrder.price; // 買い成行は売り板の最安値で約定
     } else if (sellerOrder.type === "market") {
@@ -262,8 +241,9 @@ async function matchCompanyOrders(company) {
     }
 
     lastPrice = dealPrice;
-    company.volume = (company.volume || 0) + dealAmount;
+    company.volume = (company.volume || 0) + dealAmount; // 取引量を更新
 
+    // 取引履歴を作成し、クライアントにブロードキャスト
     const trade = {
       symbol: company.symbol,
       price: dealPrice,
@@ -275,24 +255,24 @@ async function matchCompanyOrders(company) {
     trades.push(trade);
     io.emit("trade", trade);
 
-    // ユーザー/NPC更新
+    // ユーザー/NPCの残高と保有株を更新し、データベースに保存
     if (buyerDoc) {
       buyerDoc.balance -= dealAmount * dealPrice;
       buyerDoc.holdings[company.symbol] =
         (buyerDoc.holdings[company.symbol] || 0) + dealAmount;
-      await buyerDoc.save();
+      await buyerDoc.save(); // 買い手のデータを保存
     }
     if (sellerDoc) {
       sellerDoc.holdings[company.symbol] -= dealAmount;
       sellerDoc.balance += dealAmount * dealPrice;
-      await sellerDoc.save();
+      await sellerDoc.save(); // 売り手のデータを保存
     }
 
     // 注文残量を減らす
     buyerOrder.amount -= dealAmount;
     sellerOrder.amount -= dealAmount;
-    if (buyerOrder.amount <= 0) buy.shift();
-    if (sellerOrder.amount <= 0) sell.shift();
+    if (buyerOrder.amount <= 0) buy.shift(); // 買い注文が完了したら板から削除
+    if (sellerOrder.amount <= 0) sell.shift(); // 売り注文が完了したら板から削除
   }
 
   // 最新の約定価格で会社の価格を更新
@@ -300,6 +280,7 @@ async function matchCompanyOrders(company) {
   return trades;
 }
 
+// 注文板の買いと売りの不均衡を計算
 function computeImbalance(company) {
   const buyVol = (company.orderBook.buy || []).reduce(
     (s, o) => s + o.amount,
@@ -369,21 +350,21 @@ async function initDB() {
         name: "Falcon Trader",
         type: "short",
         funds: 50000,
-        balance: 50000, // NPCにもbalanceを追加
+        balance: 50000,
         holdings: { AEEN: 5, CRWK: 2 },
       },
       {
         name: "Quiet Whale",
         type: "long",
         funds: 200000,
-        balance: 200000, // NPCにもbalanceを追加
+        balance: 200000,
         holdings: { AEEN: 10, LGSH: 5 },
       },
       {
         name: "Ripple Mind",
         type: "trend",
         funds: 80000,
-        balance: 80000, // NPCにもbalanceを追加
+        balance: 80000,
         holdings: { TRFD: 8 },
       },
     ]);
@@ -395,12 +376,11 @@ async function initDB() {
 }
 
 // ---------- Market Tick ----------
+// 市場価格を定期的に更新する関数
 async function marketTick() {
   const market = await Market.findOne();
   const companies = await Company.find();
   for (let company of companies) {
-    // matchCompanyOrders は注文発生時/NPC時のみ行う
-    // ここでは価格変動ロジックのみ
     const imbalance = computeImbalance(company);
     const alpha = 0.6;
     const imbalanceImpact = 1 + alpha * imbalance * 0.02;
@@ -433,16 +413,17 @@ async function marketTick() {
       { $set: updatedFields }
     );
   }
-  await broadcastState();
+  await broadcastState(); // 市場状態をクライアントにブロードキャスト
 }
 
 // ---------- NPC ----------
+// NPCが定期的に取引を行う関数
 async function runNpcActions() {
   const npcs = await NPC.find();
   const companies = await Company.find();
 
   for (let npc of npcs) {
-    const target = companies[Math.floor(Math.random() * companies.length)];
+    const target = companies[Math.floor(Math.random() * companies.length)]; // ランダムな銘柄を選択
     if (!npc.holdings) npc.holdings = {};
 
     const side = Math.random() < 0.5 ? "buy" : "sell";
@@ -470,34 +451,34 @@ async function runNpcActions() {
       continue;
     }
 
-    // addOrderToBook を呼び出す
+    // 注文を注文板に追加または即時実行
     await addOrderToBook(npc._id, true, target, side, type, price, amount);
 
-    // 追加された注文と既存の注文のマッチングを試みる (成行注文はaddOrderToBook内で処理済み)
+    // 追加された注文と既存の注文のマッチングを試みる
     await matchCompanyOrders(target);
 
-    // Company ドキュメントを更新
+    // Company ドキュメントを更新 (注文板、価格、取引量)
     await Company.updateOne(
       { _id: target._id },
       {
         $set: {
           orderBook: target.orderBook,
-          price: target.price, // matchCompanyOrders で更新された price を保存
-          volume: target.volume, // matchCompanyOrders で更新された volume を保存
+          price: target.price,
+          volume: target.volume,
         },
       }
     );
     // NPC の holdings と balance は matchCompanyOrders の中で save() されているので、ここでは不要
   }
 
-  await broadcastState();
+  await broadcastState(); // 市場状態をクライアントにブロードキャスト
 }
 
 // ---------- Broadcast ----------
 let lastBroadcast = 0;
 async function broadcastState(force = false) {
   const now = Date.now();
-  // 頻繁なブロードキャストを避ける
+  // 頻繁なブロードキャストを避ける (200ms間隔)
   if (!force && now - lastBroadcast < 200) return;
   lastBroadcast = now;
   const companies = await Company.find().lean();
@@ -508,24 +489,24 @@ async function broadcastState(force = false) {
     price: c.price,
     volume: c.volume,
     orderBook: {
-      // クライアントには上位8件のみ送信
+      // クライアントには上位8件のみ送信し、無効なストップ注文は除外
       buy: (c.orderBook?.buy || [])
-        .filter((o) => o.type !== "stop" || o.stopPrice !== null) // stopPriceがnullの無効なstop注文は表示しない
+        .filter((o) => o.type !== "stop" || o.stopPrice !== null)
         .slice(0, 8),
       sell: (c.orderBook?.sell || [])
-        .filter((o) => o.type !== "stop" || o.stopPrice !== null) // stopPriceがnullの無効なstop注文は表示しない
+        .filter((o) => o.type !== "stop" || o.stopPrice !== null)
         .slice(0, 8),
     },
   }));
   io.emit("state", { companies: compact, market });
 }
 
-// 成行買い注文の実行
+// 成行買い注文の実行ロジック
 async function executeMarketBuy(actorId, isNPC, company, amount) {
   let remaining = amount;
   const sellOrders = company.orderBook.sell;
 
-  sellOrders.sort((a, b) => a.price - b.price); // 価格が安い順
+  sellOrders.sort((a, b) => a.price - b.price); // 価格が安い順にソート
 
   for (let i = 0; i < sellOrders.length && remaining > 0; i++) {
     const order = sellOrders[i];
@@ -536,7 +517,6 @@ async function executeMarketBuy(actorId, isNPC, company, amount) {
     // ---- 買い側の更新 ----
     const buyerDoc = await getActorDocument(actorId, isNPC);
     if (!buyerDoc || buyerDoc.balance < totalCost) {
-      // 資金不足の場合、この注文はこれ以上約定できない
       console.warn(
         `Market buy for ${company.symbol} (actor: ${actorId}) failed due to insufficient funds.`
       );
@@ -545,19 +525,19 @@ async function executeMarketBuy(actorId, isNPC, company, amount) {
     buyerDoc.balance -= totalCost;
     buyerDoc.holdings[company.symbol] =
       (buyerDoc.holdings[company.symbol] || 0) + dealAmount;
-    await buyerDoc.save();
+    await buyerDoc.save(); // 買い手のデータを保存
 
     // ---- 売り側の更新 ----
     const sellerDoc = await getActorDocument(order.actorId, order.isNPC);
     if (sellerDoc) {
       sellerDoc.balance += totalCost;
       sellerDoc.holdings[company.symbol] -= dealAmount;
-      await sellerDoc.save();
+      await sellerDoc.save(); // 売り手のデータを保存
     }
 
     // ---- 会社側の更新 ----
     company.price = dealPrice; // 最新の約定価格で更新
-    company.volume = (company.volume || 0) + dealAmount;
+    company.volume = (company.volume || 0) + dealAmount; // 取引量を更新
 
     // 注文残量
     order.amount -= dealAmount;
@@ -572,12 +552,12 @@ async function executeMarketBuy(actorId, isNPC, company, amount) {
   return remaining; // 約定しなかった残量
 }
 
-// 成行売り注文の実行
+// 成行売り注文の実行ロジック
 async function executeMarketSell(actorId, isNPC, company, amount) {
   let remaining = amount;
   const buyOrders = company.orderBook.buy;
 
-  buyOrders.sort((a, b) => b.price - a.price); // 価格が高い順
+  buyOrders.sort((a, b) => b.price - a.price); // 価格が高い順にソート
 
   for (let i = 0; i < buyOrders.length && remaining > 0; i++) {
     const order = buyOrders[i];
@@ -588,7 +568,6 @@ async function executeMarketSell(actorId, isNPC, company, amount) {
     // ---- 売り側の更新 ----
     const sellerDoc = await getActorDocument(actorId, isNPC);
     if (!sellerDoc || (sellerDoc.holdings[company.symbol] || 0) < dealAmount) {
-      // 株不足の場合、この注文はこれ以上約定できない
       console.warn(
         `Market sell for ${company.symbol} (actor: ${actorId}) failed due to insufficient holdings.`
       );
@@ -596,7 +575,7 @@ async function executeMarketSell(actorId, isNPC, company, amount) {
     }
     sellerDoc.balance += totalGain;
     sellerDoc.holdings[company.symbol] -= dealAmount;
-    await sellerDoc.save();
+    await sellerDoc.save(); // 売り手のデータを保存
 
     // ---- 買い側の更新 ----
     const buyerDoc = await getActorDocument(order.actorId, order.isNPC);
@@ -604,12 +583,12 @@ async function executeMarketSell(actorId, isNPC, company, amount) {
       buyerDoc.balance -= totalGain;
       buyerDoc.holdings[company.symbol] =
         (buyerDoc.holdings[company.symbol] || 0) + dealAmount;
-      await buyerDoc.save();
+      await buyerDoc.save(); // 買い手のデータを保存
     }
 
     // ---- 会社側の更新 ----
     company.price = dealPrice; // 最新の約定価格で更新
-    company.volume = (company.volume || 0) + dealAmount;
+    company.volume = (company.volume || 0) + dealAmount; // 取引量を更新
 
     order.amount -= dealAmount;
     if (order.amount <= 0) {
@@ -629,8 +608,9 @@ io.on("connection", async (socket) => {
     socket.handshake.headers["x-forwarded-for"] || socket.handshake.address;
   let user = await User.findOne({ ip });
   if (!user) user = await User.create({ ip });
-  socket.user = user;
+  socket.user = user; // ソケットにユーザー情報を紐付け
 
+  // 接続したクライアントにユーザーデータを送信
   socket.emit("userData", {
     balance: user.balance,
     holdings: user.holdings,
@@ -667,10 +647,10 @@ io.on("connection", async (socket) => {
       stopPrice
     );
 
-    // 追加された注文と既存の注文のマッチングを試みる (成行注文はaddOrderToBook内で処理済み)
+    // 追加された注文と既存の注文のマッチングを試みる
     await matchCompanyOrders(company);
 
-    // Company ドキュメントを更新
+    // Company ドキュメントを更新 (注文板、価格、取引量)
     await Company.updateOne(
       { _id: company._id },
       {
@@ -683,8 +663,11 @@ io.on("connection", async (socket) => {
     );
 
     // ユーザーデータを最新の状態に更新してクライアントに送信
-    const freshUser = await User.findById(socket.user._id);
-    socket.user = freshUser;
+    // 注意: freshUser.save() は不要です。
+    // 約定処理 (matchCompanyOrders, executeMarketBuy, executeMarketSell) の中で
+    // 既に buyerDoc.save() / sellerDoc.save() が呼び出され、DBに保存されています。
+    const freshUser = await User.findById(socket.user._id); // DBから最新のユーザー情報を取得
+    socket.user = freshUser; // socket.user も更新しておく
     socket.emit("userData", {
       balance: freshUser.balance,
       holdings: freshUser.holdings,
@@ -716,7 +699,7 @@ async function start() {
     console.log("MongoDB connected!");
     // It's good practice to clear the database and re-initialize if schema changes
     // If you have existing data that causes issues, consider uncommenting these lines
-    // await mongoose.connection.db.dropDatabase();
+    // await mongoose.connection.db.dropDatabase(); // 開発時のみ有効化することを推奨
     await initDB();
     await startLoops();
     const PORT = process.env.PORT || 8080;
